@@ -130,3 +130,69 @@ async def resale(asset_id: int):
 @app.get("/api/safety/check/{asset_id}")
 async def safety_check(asset_id: int):
     return {"assetId": asset_id, "classification": "Unable to verify", "verified": False, "note": "No authoritative stolen-item registry is connected. This result cannot confirm that an item is safe or stolen.", "source": None, "observedAt": int(time.time())}
+
+
+@app.get("/api/users/lookup")
+async def user_lookup(user: str):
+    key = f"user-lookup:{user.lower()}"
+    now = time.time()
+    if key in cache and cache[key][0] > now:
+        return cache[key][1]
+    if user.isdigit():
+        user_id = int(user)
+        profile = await get_json(f"https://users.roblox.com/v1/users/{user_id}")
+    else:
+        lookup = await post_json("https://users.roblox.com/v1/usernames/users", {
+            "usernames": [user], "excludeBannedUsers": True
+        })
+        matches = lookup.get("data", [])
+        if not matches:
+            raise HTTPException(404, "Account not found.")
+        user_id = matches[0]["id"]
+        profile = await get_json(f"https://users.roblox.com/v1/users/{user_id}")
+    result = {
+        "userId": user_id,
+        "username": profile.get("name"),
+        "displayName": profile.get("displayName"),
+        "created": profile.get("created"),
+        "description": profile.get("description")
+    }
+    cache[key] = (now + TTL, result)
+    return result
+
+
+@app.get("/api/users/{user_id}/collectibles")
+async def user_collectibles(user_id: int, limit: int = Query(100, ge=10, le=100), cursor: str | None = None):
+    key = f"user-collectibles:{user_id}:{limit}:{cursor or ''}"
+    now = time.time()
+    if key in cache and cache[key][0] > now:
+        return cache[key][1]
+    try:
+        data = await get_json(
+            f"https://inventory.roblox.com/v1/users/{user_id}/assets/collectibles",
+            {"limit": limit, "sortOrder": "Desc", "cursor": cursor}
+        )
+    except HTTPException as exc:
+        if exc.status_code in (401, 403, 404):
+            return {
+                "userId": user_id, "isPublic": False, "count": None,
+                "items": [], "nextPageCursor": None,
+                "note": "Inventory is private or unavailable."
+            }
+        raise
+    rows = data.get("data", [])
+    items = [{
+        "assetId": str(row.get("assetId") or row.get("userAssetId") or ""),
+        "name": row.get("name") or "Collectible",
+        "recentAveragePrice": row.get("recentAveragePrice"),
+        "serialNumber": row.get("serialNumber"),
+        "originalPrice": row.get("originalPrice")
+    } for row in rows]
+    result = {
+        "userId": user_id, "isPublic": True, "count": len(items),
+        "items": items, "nextPageCursor": data.get("nextPageCursor"),
+        "source": "Public collectibles inventory endpoint",
+        "observedAt": int(now)
+    }
+    cache[key] = (now + TTL, result)
+    return result
