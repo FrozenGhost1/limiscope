@@ -31,6 +31,10 @@ async def get_json(url: str, params: dict | None = None):
 async def post_json(url: str, payload: dict):
     async with httpx.AsyncClient(timeout=18, headers={"User-Agent": "LimiScope/0.2", "Content-Type": "application/json"}) as client:
         response = await client.post(url, json=payload)
+        # Retry read-only catalog detail requests with Roblox's CSRF token when requested.
+        if response.status_code == 403 and response.headers.get("x-csrf-token"):
+            headers = {"User-Agent": "LimiScope/0.2", "Content-Type": "application/json", "x-csrf-token": response.headers["x-csrf-token"]}
+            response = await client.post(url, json=payload, headers=headers)
         if response.status_code == 429:
             raise HTTPException(503, "Roblox is rate-limiting requests. Please retry shortly.")
         if response.status_code >= 400:
